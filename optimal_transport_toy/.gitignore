@@ -1,0 +1,4 @@
+checkpoints/
+figures/
+__pycache__/
+*.py[cod]
