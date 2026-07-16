@@ -1,7 +1,7 @@
 # Transformer particle-ID classifier
 
-A transformer that identifies the incident particle (electron / proton, and
-optionally carbon / helium) from the raw detector response of a single event.
+A transformer that identifies the incident particle — **electron / proton /
+carbon** — from the raw detector response of a single event.
 
 This is **step 1** of the thesis: get a working classifier trained on Monte
 Carlo. Later steps deal with the fact that the classifier degrades on real
@@ -216,12 +216,16 @@ Per-class accuracy:
     C: 0.9116   He: 0.9361   e: 0.9267   p: 0.9315
 ```
 
-> ⚠️ **This pretrained model is the 4-class one** — `['C', 'He', 'e', 'p']`, in
-> that order. It is the full thesis classifier (macro-F1 0.911). If you train
-> your own with `--classes e p` you get a *2-class* model, and the two are not
-> interchangeable: the label indices and the output layer differ. `predict.py`
-> always reads the class list **from the checkpoint**, so it does the right
-> thing either way.
+> ⚠️ **This pretrained model has 4 classes** — `['C', 'He', 'e', 'p']`, in that
+> order — while **you will train 3** (`e p C`, see §6). That is not a mistake:
+> this checkpoint includes **helium** because the training sample is a
+> *space-like* spectrum, and helium really is present in space. But there is
+> **no test-beam data for helium**, so nothing downstream can be validated on
+> it — which is why your classifier drops it.
+>
+> The practical consequence: the two models are **not interchangeable** — the
+> label indices and the output layer differ. `predict.py` always reads the class
+> list **from the checkpoint**, so it does the right thing with either.
 
 Useful flags: `--ckpt` (use your own checkpoint instead), `--limit` (quick try),
 `--out predictions.csv` (save predictions + per-class probabilities).
@@ -253,7 +257,7 @@ Applies the encoding to the whole parquet and writes memory-mapped arrays, so
 training never touches the parquet again:
 
 ```bash
-python preprocess.py --input /path/to/dumpMC_spectra.parquet --classes e p
+python preprocess.py --input /path/to/dumpMC_spectra.parquet --classes e p C
 ```
 
 Writes to `derived/pid/`:
@@ -266,12 +270,16 @@ Writes to `derived/pid/`:
 | `meta.json` | provenance |
 
 Class names are canonical: `e`, `p`, `C`, `He` (the parquet's
-`electron`/`proton`/… are mapped for you). `--classes e p` gives you the
-2-class electron/proton problem — the right place to start. To reproduce the
-full thesis classifier use `--classes C He e p`.
+`electron`/`proton`/… are mapped for you). The default `--classes e p C` is
+**your target: the three particles that have test-beam data.** Helium exists in
+the simulation but there is **no test-beam data for it**, so it is left out.
 
-> The **order** you pass to `--classes` defines the label index (`e p` → e=0,
-> p=1). Keep it consistent.
+If you want to warm up on an easier problem first, `--classes e p` gives the
+2-class electron/proton case — e and p are very different in this detector, so
+it should train quickly.
+
+> The **order** you pass to `--classes` defines the label index (`e p C` → e=0,
+> p=1, C=2). Keep it consistent between preprocessing and anything downstream.
 
 ### Step 2 — train
 
@@ -296,10 +304,14 @@ Outputs:
 
 ### What you should see
 
-For the **4-class** version the reference numbers are macro-F1 **0.911**,
-accuracy **0.930**, AUC **0.991**. The **2-class e/p** problem is much easier —
-expect high accuracy quickly. If e/p looks near-perfect, that's real: they are
-very different in this detector. The hard part comes later, on real data.
+As a reference point, the 4-class model shipped in `pretrained/` reaches
+macro-F1 **0.911**, accuracy **0.930**, AUC **0.991**. Your **3-class e/p/C**
+model should do at least as well — dropping helium removes the class that is
+easiest to confuse with protons, so if anything it gets a little easier.
+
+If the numbers look near-perfect, that's real, not a bug: e, p and C are very
+different in this detector *in simulation*. The hard part comes later — on real
+test-beam data the same classifier degrades badly (electrons 0.989 → 0.916).
 
 ---
 
@@ -325,9 +337,10 @@ very different in this detector. The hard part comes later, on real data.
    anything. Check the confusion matrix: which particles does it mix up?
 1. Get the smoke test running end-to-end. Confirm you understand the shapes:
    why 21, why 8.
-2. Train e/p properly and look at the **confusion matrix** — which events get
-   confused, and does it make physical sense?
-3. Add `C` and `He` (`--classes C He e p`) and see which pairs are hard.
+2. Warm up on `--classes e p`, then train your real target `--classes e p C`
+   properly and look at the **confusion matrix** — which events get confused,
+   and does it make physical sense?
+3. Compare against the shipped 4-class model: does adding helium make p harder?
 4. Ablate: what happens if you feed only the `RAN` layers? Only `EDEP`? This
    builds intuition for *which* features carry the discrimination.
 5. Change `d_model` / `n_layers` — does bigger actually help, or just overfit?
