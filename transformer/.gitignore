@@ -6,6 +6,12 @@ __pycache__/
 derived/
 checkpoints/
 
-# Raw data is never committed (ask Andrea for the parquet)
+# Raw data is never committed 
 *.parquet
 *.pkl
+
+derived/
+*.npy
+
+derived/
+*.npy
