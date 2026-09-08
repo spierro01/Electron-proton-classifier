@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[oc]
+
+# Regenerable outputs
+derived/
+figures/
+corrections/
+checkpoints/
+
+# Raw data is never committed (the parquets live in the Google Drive folder)
+*.parquet
+*.npz
