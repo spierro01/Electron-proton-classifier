@@ -1,130 +1,90 @@
-import os
-import sys
-import numpy as np
-import torch
+"""Evaluate test-set closure for the neural OT toy exercise."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 
-# Aggiunge la cartella dello script al percorso di Python per trovare models.py
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from model import NeuralOT
 
-from model import ICNN, compute_grad_g
 
-def load_transport_model(checkpoint_path, device):
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    config = checkpoint["config"]
-    g_net = ICNN(in_dim=2, hidden_dim=config["hidden_dim"], num_layers=config["num_layers"]).to(device)
-    g_net.load_state_dict(checkpoint["g_state_dict"])
-    g_net.eval()
+def auc_for_two_samples(first: np.ndarray, second: np.ndarray, seed: int = 42) -> float:
+    features = np.vstack([first, second])
+    labels = np.r_[np.zeros(len(first), dtype=int), np.ones(len(second), dtype=int)]
+    x_train, x_holdout, y_train, y_holdout = train_test_split(
+        features, labels, test_size=0.30, random_state=seed, stratify=labels
+    )
+    classifier = RandomForestClassifier(
+        n_estimators=400, min_samples_leaf=3, n_jobs=-1, random_state=seed
+    )
+    classifier.fit(x_train, y_train)
+    return roc_auc_score(y_holdout, classifier.predict_proba(x_holdout)[:, 1])
 
-    stats = checkpoint["stats"]
-    return g_net, stats
 
-def transport_samples(g_net, source_data, stats, device, batch_size=512):
-    mean_s, std_s = stats["mean_s"], stats["std_s"]
-    mean_t, std_t = stats["mean_t"], stats["std_t"]
+def common_limits(*arrays: np.ndarray) -> tuple[tuple[float, float], tuple[float, float]]:
+    combined = np.vstack(arrays)
+    low, high = np.quantile(combined, [0.005, 0.995], axis=0)
+    margin = 0.08 * (high - low)
+    return (low[0] - margin[0], high[0] + margin[0]), (low[1] - margin[1], high[1] + margin[1])
 
-    src_norm = (source_data - mean_s) / std_s
-    src_tensor = torch.tensor(src_norm, dtype=torch.float32, device=device)
 
-    transported_norm = []
-    for i in range(0, len(src_tensor), batch_size):
-        batch = src_tensor[i:i + batch_size]
-        grad = compute_grad_g(g_net, batch)
-        transported_norm.append(grad.detach().cpu().numpy())
+def plot_closure(
+    source: np.ndarray, target: np.ndarray, mapped: np.ndarray, output: Path
+) -> None:
+    xlim, ylim = common_limits(source, target, mapped)
+    fig, axes = plt.subplots(2, 3, figsize=(15, 9), constrained_layout=True)
+    for axis, values, title, colour in zip(
+        axes[0],
+        (source, target, mapped),
+        ("Source test", "Target test", "Transported source test"),
+        ("#1f77b4", "#d62728", "#6f42c1"),
+    ):
+        axis.scatter(values[:, 0], values[:, 1], s=4, alpha=0.28, c=colour, rasterized=True)
+        axis.set(title=title, xlim=xlim, ylim=ylim, xlabel="x0", ylabel="x1")
 
-    transported_norm = np.vstack(transported_norm)
-    transported_orig = transported_norm * std_t + mean_t
-    return transported_orig
+    for coordinate, axis in enumerate(axes[1, :2]):
+        axis.hist(target[:, coordinate], bins=60, density=True, alpha=0.55, label="target", color="#d62728")
+        axis.hist(mapped[:, coordinate], bins=60, density=True, alpha=0.55, label="transported", color="#6f42c1")
+        axis.set(title=f"Marginal x{coordinate}", xlabel=f"x{coordinate}", ylabel="density")
+        axis.legend()
+    axes[1, 2].axis("off")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=180)
+    plt.close(fig)
 
-def verify_reloading_invariance(g_net, stats, source_test, device):
-    res1 = transport_samples(g_net, source_test[:100], stats, device)
-    g_net_reloaded, stats_reloaded = load_transport_model("checkpoints/ot_model.pt", device)
-    res2 = transport_samples(g_net_reloaded, source_test[:100], stats_reloaded, device)
 
-    diff = np.max(np.abs(res1 - res2))
-    print("\n--- VERIFICA RELOAD ---")
-    print(f"Max differenza tra modello originale e ricaricato: {diff:.2e}")
-    assert np.allclose(res1, res2, atol=1e-5), "ERRORE: I risultati differiscono dopo il reload!"
-    print("VERIFICA SUPERATA: Il modello ricaricato produce risultati identici.")
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data", type=Path, default=Path("data/toy_ot_data.npz"))
+    parser.add_argument("--checkpoint", type=Path, default=Path("checkpoints/neural_ot.pt"))
+    parser.add_argument("--output", type=Path, default=Path("figures/neural_ot_closure.png"))
+    args = parser.parse_args()
 
-def compute_roc_auc(X1, X2):
-    X = np.vstack([X1, X2])
-    y = np.hstack([np.zeros(len(X1)), np.ones(len(X2))])
+    data = np.load(args.data)
+    source_test, target_test = data["source_test"], data["target_test"]
+    transport = NeuralOT.load(args.checkpoint)
+    mapped = transport.transform(source_test)
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
+    # Serialization is part of the requested deliverable.
+    reloaded = NeuralOT.load(args.checkpoint, device=transport.device)
+    reload_difference = np.max(np.abs(mapped[:100] - reloaded.transform(source_test[:100])))
+    assert np.allclose(mapped[:100], reloaded.transform(source_test[:100]), atol=1e-6)
 
-    clf = RandomForestClassifier(n_estimators=100, random_state=42)
-    clf.fit(X_train, y_train)
+    print("per-coordinate statistics")
+    for name, values in (("source", source_test), ("target", target_test), ("transported", mapped)):
+        print(f"{name:12s} mean={values.mean(axis=0)}  std={values.std(axis=0)}")
+    print(f"reload max absolute difference: {reload_difference:.3e}")
+    print(f"ROC AUC before transport: {auc_for_two_samples(source_test, target_test):.4f}")
+    print(f"ROC AUC after transport:  {auc_for_two_samples(mapped, target_test):.4f}")
+    plot_closure(source_test, target_test, mapped, args.output)
+    print(f"closure plot saved to {args.output}")
 
-    preds = clf.predict_proba(X_test)[:, 1]
-    return roc_auc_score(y_test, preds)
-
-def plot_results_with_marginals(source_test, target_test, transported_test):
-    fig = plt.figure(figsize=(15, 9))
-
-    ax1 = fig.add_subplot(2, 3, 1)
-    ax1.scatter(source_test[:, 0], source_test[:, 1], alpha=0.3, s=5, c='blue')
-    ax1.set_title("Source Test")
-    ax1.set_xlim(-5, 5); ax1.set_ylim(-5, 5)
-
-    ax2 = fig.add_subplot(2, 3, 2)
-    ax2.scatter(target_test[:, 0], target_test[:, 1], alpha=0.3, s=5, c='red')
-    ax2.set_title("Target Test")
-    ax2.set_xlim(-5, 5); ax2.set_ylim(-5, 5)
-
-    ax3 = fig.add_subplot(2, 3, 3)
-    ax3.scatter(transported_test[:, 0], transported_test[:, 1], alpha=0.3, s=5, c='purple')
-    ax3.set_title("Transported Source Test")
-    ax3.set_xlim(-5, 5); ax3.set_ylim(-5, 5)
-
-    ax4 = fig.add_subplot(2, 2, 3)
-    ax4.hist(target_test[:, 0], bins=50, density=True, alpha=0.5, color='red', label='Target')
-    ax4.hist(transported_test[:, 0], bins=50, density=True, alpha=0.5, color='purple', label='Transported')
-    ax4.set_title("Marginale Dimensione 0 (x1)")
-    ax4.legend()
-
-    ax5 = fig.add_subplot(2, 2, 4)
-    ax5.hist(target_test[:, 1], bins=50, density=True, alpha=0.5, color='red', label='Target')
-    ax5.hist(transported_test[:, 1], bins=50, density=True, alpha=0.5, color='purple', label='Transported')
-    ax5.set_title("Marginale Dimensione 1 (x2)")
-    ax5.legend()
-
-    plt.subplots_adjust(hspace=0.4, wspace=0.3)
-    os.makedirs("figures", exist_ok=True)
-    plt.savefig("figures/toy_ot_results.png")
-    print("Grafico completo salvato in figures/toy_ot_results.png")
-    plt.show()
-
-def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    data_path = os.path.join("data", "toy_ot_data.npz")
-    data = np.load(data_path)
-
-    source_test = data["source_test"]
-    target_test = data["target_test"]
-
-    g_net, stats = load_transport_model("checkpoints/ot_model.pt", device)
-
-    verify_reloading_invariance(g_net, stats, source_test, device)
-
-    transported_test = transport_samples(g_net, source_test, stats, device)
-
-    print("\n--- STATISTICHE PER COORDINATA ---")
-    print(f"Source Test Mean:       {source_test.mean(axis=0)} | Std: {source_test.std(axis=0)}")
-    print(f"Target Test Mean:       {target_test.mean(axis=0)} | Std: {target_test.std(axis=0)}")
-    print(f"Transported Test Mean:  {transported_test.mean(axis=0)} | Std: {transported_test.std(axis=0)}")
-
-    auc_before = compute_roc_auc(source_test, target_test)
-    auc_after = compute_roc_auc(transported_test, target_test)
-
-    print("\n--- RISULTATI CLASSIFICATORE ROC AUC ---")
-    print(f"ROC AUC prima del trasporto (Source vs Target): {auc_before:.4f}")
-    print(f"ROC AUC dopo il trasporto (Transported vs Target): {auc_after:.4f} (Obiettivo: < 0.62)")
-
-    plot_results_with_marginals(source_test, target_test, transported_test)
 
 if __name__ == "__main__":
     main()
