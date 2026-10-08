@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA = Path("C:/Users/sarap/Desktop/data")
+DATA = ROOT / "data"
 
 MC_PARQUET = DATA / "dumpMC.parquet"
 TB_PARQUET = DATA / "dumpTB.parquet"

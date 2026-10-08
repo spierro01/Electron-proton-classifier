@@ -3,6 +3,7 @@
 from pathlib import Path
 import json
 import sys
+import argparse
 
 import numpy as np
 import pandas as pd
@@ -16,10 +17,15 @@ from train_conditional_ot import ConditionalTransport
 from train_ot import sha256_file
 
 
-OUT = HERE / "results/task6_mod4_efficiency"
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--class-name", choices=["e", "p", "C"], required=True)
+    parser.add_argument("--map-dir", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args()
+    OUT = args.out
     if OUT.exists():
         raise FileExistsError(
             f"{OUT} esiste già. Non sovrascrivo i risultati."
@@ -94,12 +100,8 @@ def main():
     # Check all maps and event selections before writing results.
     selections = {}
 
-    for cls in ["e", "p", "C"]:
-        folder = HERE / "results" / {
-            "e": "task6_spark_e_mod4",
-            "p": "task6_spark_p_retry1",
-            "C": "task6_spark_C",
-        }[cls]
+    for cls in [args.class_name]:
+        folder = args.map_dir
         map_path = folder / "map.pt"
         config = json.loads(
             (folder / "config.json").read_text(encoding="utf-8")
@@ -114,6 +116,20 @@ def main():
         if config["tb_split_sha256"] != mask_hash:
             raise ValueError("Split TB della mappa diverso.")
 
+        verification = json.loads((folder / "verification.json").read_text())
+        if not verification.get("reload_invariance_passed") or verification.get("TB_validation_used") is not False:
+            raise ValueError("Training verification failed.")
+        if config.get("TB_validation_used") is not False or "bootstrap_seed" not in config:
+            raise ValueError("Not a bootstrap derivation-only map.")
+        nominal_dir = HERE / f"results/task6_spark_{cls}_mod4"
+        nominal_config = json.loads((nominal_dir / "config.json").read_text())
+        for key in ["architecture", "batch_size", "outer_steps", "identity_steps", "g_updates", "f_updates", "lr", "min_lr", "betas", "weight_decay", "grad_clip", "seed", "common_energies"]:
+            if config[key] != nominal_config[key]:
+                raise ValueError(f"Bootstrap/nominal mismatch: {key}")
+        payload = torch.load(map_path, map_location="cpu", weights_only=True)
+        if payload["metadata"] != config:
+            raise ValueError("Map/config metadata mismatch.")
+        del payload
         idx = classes.index(cls)
         common = np.asarray(config["common_energies"])
 
@@ -125,6 +141,18 @@ def main():
             & ~split
             & np.isin(energy_tb, common)
         )
+
+        with np.load(folder / "selection.npz", allow_pickle=False) as selected:
+            expected_tb = np.flatnonzero((labels_tb == idx) & split & np.isin(energy_tb, common))
+            np.testing.assert_array_equal(selected["tb_original_derivation_rows"], expected_tb)
+            np.testing.assert_array_equal(selected["mc_rows"], mc_rows)
+            draw = selected["bootstrap_indices"]
+            if draw.shape != expected_tb.shape or not np.issubdtype(draw.dtype, np.integer) or np.any(draw < 0) or np.any(draw >= len(expected_tb)):
+                raise ValueError("Invalid bootstrap indices.")
+            np.testing.assert_array_equal(selected["tb_derivation_rows"], expected_tb[draw])
+            np.testing.assert_array_equal(selected["tb_energy"], energy_tb[expected_tb[draw]])
+            reproduced = np.random.default_rng(config["bootstrap_seed"]).choice(len(expected_tb), size=len(expected_tb), replace=True)
+            np.testing.assert_array_equal(draw, reproduced)
 
         # Compare the actual MC rows with the previous calibration.
         previous_path = (
@@ -162,7 +190,7 @@ def main():
     OUT.mkdir(parents=True)
     summary = []
 
-    for cls in ["e", "p", "C"]:
+    for cls in [args.class_name]:
         idx = classes.index(cls)
         map_path, mc_rows, tb_rows, raw_correct, tb_correct = selections[cls]
 
@@ -208,6 +236,32 @@ def main():
                     f"  Processed {stop:,}/{len(mc_rows):,}",
                     flush=True,
                 )
+
+        nominal_path = HERE / "results/task6_nominal_mod4_efficiency" / f"calibrated_MC_{cls}.npz"
+        with np.load(nominal_path, allow_pickle=False) as nominal:
+            np.testing.assert_array_equal(nominal["parquet_row"], mc_rows)
+            np.testing.assert_array_equal(nominal["label"], labels_mc[mc_rows])
+            np.testing.assert_array_equal(nominal["energy_mev"], energy_mc[mc_rows])
+            if nominal["classes"].tolist() != classes or str(nominal["checkpoint_sha256"].item()) != checkpoint_hash:
+                raise ValueError("Nominal prediction provenance mismatch.")
+            if str(nominal["map_sha256"].item()) != sha256_file(nominal_dir / "map.pt"):
+                raise ValueError("Nominal map changed.")
+            nominal_logits = nominal["logits"]
+        by_energy = []
+        for energy in [None] + list(config["common_energies"]):
+            select_mc = np.ones(len(mc_rows), dtype=bool) if energy is None else energy_mc[mc_rows] == energy
+            select_tb = np.ones(len(tb_rows), dtype=bool) if energy is None else energy_tb[tb_rows] == energy
+            counts = {"raw_MC": logits_mc[mc_rows][select_mc], "nominal_MC": nominal_logits[select_mc],
+                      "bootstrap_MC": calibrated_logits[select_mc], "TB_validation": logits_tb[tb_rows][select_tb]}
+            record = {"cls": cls, "energy": "all" if energy is None else float(energy),
+                      "bootstrap_seed": config["bootstrap_seed"], "n_MC": int(select_mc.sum()),
+                      "n_TB_validation": int(select_tb.sum())}
+            for name, values in counts.items():
+                correct = int((values.argmax(1) == idx).sum())
+                record[name] = correct / len(values)
+                record["correct_" + name] = correct
+            by_energy.append(record)
+        pd.DataFrame(by_energy).to_csv(OUT / "efficiency_by_energy.csv", index=False)
 
         conditional_correct = int(
             (calibrated_logits.argmax(1) == idx).sum()
@@ -269,6 +323,12 @@ def main():
 
     print("\nEfficiency comparison:")
     print(pd.DataFrame(summary).to_string(index=False))
+    if sha256_file(mask_path) != mask_hash:
+        raise RuntimeError("TB split changed during evaluation.")
+    completion = {"class_name": args.class_name, "bootstrap_seed": config["bootstrap_seed"],
+                  "map_sha256": sha256_file(map_path), "checkpoint_sha256": checkpoint_hash,
+                  "tb_split_sha256": mask_hash, "completed": True}
+    (OUT / "evaluation_complete.json").write_text(json.dumps(completion, indent=2))
     print(f"\nSaved to: {OUT}")
 
 

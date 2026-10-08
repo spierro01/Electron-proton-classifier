@@ -13,7 +13,7 @@ from evaluate_ot_by_energy import efficiency
 
 
 HERE = Path(__file__).resolve().parent
-OUT = HERE / "results/task6_mod4_energy"
+OUT = HERE / "results/task6_nominal_mod4_energy"
 
 
 def main():
@@ -26,14 +26,14 @@ def main():
         HERE / "results/task5_energy/efficiency_by_energy.csv"
     )
     integrated = pd.read_csv(
-        HERE / "results/task6_mod4_efficiency/efficiency_comparison.csv"
+        HERE / "results/task6_nominal_mod4_efficiency/efficiency_comparison.csv"
     ).set_index("cls")
 
     records = []
 
     for cls in ["e", "p", "C"]:
         new_path = (
-            HERE / "results/task6_mod4_efficiency"
+            HERE / "results/task6_nominal_mod4_efficiency"
             / f"calibrated_MC_{cls}.npz"
         )
         old_path = (

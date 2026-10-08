@@ -16,7 +16,7 @@ from train_conditional_ot import ConditionalTransport
 from train_ot import sha256_file
 
 
-OUT = HERE / "results/task6_mod4_efficiency"
+OUT = HERE / "results/task6_nominal_mod4_efficiency"
 
 
 def main():
@@ -97,8 +97,8 @@ def main():
     for cls in ["e", "p", "C"]:
         folder = HERE / "results" / {
             "e": "task6_spark_e_mod4",
-            "p": "task6_spark_p_retry1",
-            "C": "task6_spark_C",
+            "p": "task6_spark_p_mod4",
+            "C": "task6_spark_C_mod4",
         }[cls]
         map_path = folder / "map.pt"
         config = json.loads(
