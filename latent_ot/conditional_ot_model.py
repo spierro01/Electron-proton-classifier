@@ -49,6 +49,7 @@ class ConditionalICNN(nn.Module):
         hidden_dim=128,
         num_layers=3,
         condition_dim=32,
+        input_modulation=False,
     ):
         super().__init__()
 
@@ -56,6 +57,7 @@ class ConditionalICNN(nn.Module):
             raise ValueError("All architecture dimensions must be positive.")
 
         self.in_dim = in_dim
+        self.input_modulation = input_modulation
 
         # This branch depends ONLY on energy.
         # Its weights do not require convexity constraints.
@@ -71,6 +73,13 @@ class ConditionalICNN(nn.Module):
             nn.Linear(in_dim, hidden_dim)
             for _ in range(num_layers)
         ])
+
+        # At fixed energy, this rescaling is linear in z.
+        if input_modulation:
+            self.input_gates = nn.ModuleList([
+                nn.Linear(condition_dim, in_dim)
+                for _ in range(num_layers)
+            ])
 
         self.energy_biases = nn.ModuleList([
             nn.Linear(condition_dim, hidden_dim)
@@ -120,6 +129,12 @@ class ConditionalICNN(nn.Module):
             nn.init.normal_(layer.weight, mean=0.0, std=0.01)
             nn.init.zeros_(layer.bias)
 
+        # Initialise input modulation close to one.
+        if self.input_modulation:
+            for layer in self.input_gates:
+                nn.init.normal_(layer.weight, mean=0.0, std=0.01)
+                nn.init.ones_(layer.bias)
+
         nn.init.zeros_(self.affine_coefficients.weight)
         nn.init.zeros_(self.affine_coefficients.bias)
         nn.init.zeros_(self.energy_offset.weight)
@@ -147,8 +162,13 @@ class ConditionalICNN(nn.Module):
 
         condition = self.energy_encoder(energy)
 
+        def z_input(index):
+            if self.input_modulation:
+                return z * self.input_gates[index](condition)
+            return z
+
         h = self.activation(
-            self.z_layers[0](z)
+            self.z_layers[0](z_input(0))
             + self.energy_biases[0](condition)
         )
 
@@ -159,7 +179,7 @@ class ConditionalICNN(nn.Module):
 
             h = self.activation(
                 positive_layer(h * gate)
-                + self.z_layers[index + 1](z)
+                + self.z_layers[index + 1](z_input(index + 1))
                 + self.energy_biases[index + 1](condition)
             )
 
@@ -210,7 +230,7 @@ def smoke_test():
 
     torch.manual_seed(42)
 
-    potential = ConditionalICNN()
+    potential = ConditionalICNN(input_modulation=True)
     z = torch.randn(16, 64)
     energy = torch.linspace(-1, 1, 16).reshape(-1, 1)
 

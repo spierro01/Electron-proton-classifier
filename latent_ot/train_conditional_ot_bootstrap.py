@@ -1,4 +1,4 @@
-"""Task 6: energy-conditioned neural OT.
+"""Bootstrap of the nominal energy-conditioned neural OT map.
 
 One map per particle class.
 Only TB derivation is used for fitting.
@@ -170,6 +170,7 @@ def optimizer_step(loss, optimizer, parameters):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--bootstrap-seed", type=int, required=True)
     parser.add_argument("--class-name", choices=["e", "p", "C"], required=True)
     parser.add_argument("--hidden", type=int, default=128)
     parser.add_argument("--layers", type=int, default=4)
@@ -238,6 +239,16 @@ def main():
     target, target_e, tb_rows = (
         target[keep_tb], target_e[keep_tb], tb_rows[keep_tb]
     )
+
+    original_tb_rows = tb_rows.copy()
+    original_tb_energy = target_e.copy()
+    bootstrap_rng = np.random.default_rng(args.bootstrap_seed)
+    bootstrap_indices = bootstrap_rng.choice(len(target), size=len(target), replace=True)
+    target, target_e, tb_rows = (target[bootstrap_indices], target_e[bootstrap_indices], tb_rows[bootstrap_indices])
+    # Do not silently redraw a sample or drop energy settings if one is missing.
+    if not np.array_equal(np.unique(target_e), common):
+        raise ValueError("Bootstrap draw lacks a training energy. Inspect sampling protocol before proceeding.")
+    print(f"Bootstrap seed={args.bootstrap_seed}; N={len(tb_rows):,}; unique={len(np.unique(tb_rows)):,}", flush=True)
 
     architecture = {
         "in_dim": 64,
@@ -315,6 +326,10 @@ def main():
         "source_events": len(source),
         "target_derivation_events": len(target),
         "common_energies": common.tolist(),
+        "bootstrap_seed": args.bootstrap_seed,
+        "bootstrap_method": "Ordinary event bootstrap within class, TB derivation only; N draws with replacement.",
+        "bootstrap_unique_events": int(len(np.unique(tb_rows))),
+        "original_target_events": int(len(original_tb_rows)),
         "excluded_tb_energies": excluded_tb.tolist(),
         "architecture": architecture,
         "batch_size": args.batch_size,
@@ -334,7 +349,7 @@ def main():
             "for source and target; independent events."
         ),
         "latent_statistics": (
-            "Separate domain statistics on all selected fitting events."
+            "Source statistics on unchanged MC; target statistics recomputed on the bootstrap draw."
         ),
         "energy_statistics": (
             "Shared mean/std of the unique common beam energies."
@@ -342,6 +357,8 @@ def main():
         "TB_validation_used": False,
     }
 
+    metadata["input_sha256"] = {p.name: sha256_file(p) for p in [mc_path, tb_path, mask_path]}
+    metadata["implementation_sha256"] = {p.name: sha256_file(p) for p in [Path(__file__), HERE / "conditional_ot_model.py", HERE / "train_ot.py"]}
     args.out.mkdir(parents=True)
     (args.out / "config.json").write_text(
         json.dumps(metadata, indent=2), encoding="utf-8"
@@ -353,6 +370,9 @@ def main():
         mc_energy=source_e,
         tb_energy=target_e,
         common_energies=common,
+        tb_original_derivation_rows=original_tb_rows,
+        tb_original_energy=original_tb_energy,
+        bootstrap_indices=bootstrap_indices,
     )
 
     print(f"Class: {args.class_name}", flush=True)

@@ -94,7 +94,11 @@ def main():
     # Preflight checks for every map before processing events.
     configurations = {}
     for cls in ["e", "p", "C"]:
-        folder = HERE / f"results/task3_{cls}_h128_1000"
+        folder = HERE / "results" / {
+            "e": "task3_spark_e",
+            "p": "task3_spark_p",
+            "C": "task3_spark_C_retry1",
+        }[cls]
         config = json.loads((folder / "config.json").read_text())
         if config["class_name"] != cls:
             raise ValueError("Classe della mappa non corretta.")
@@ -115,7 +119,11 @@ def main():
         class_index = classes.index(cls)
         config = configurations[cls]
         common = np.asarray(config["common_energies"])
-        folder = HERE / f"results/task3_{cls}_h128_1000"
+        folder = HERE / "results" / {
+            "e": "task3_spark_e",
+            "p": "task3_spark_p",
+            "C": "task3_spark_C_retry1",
+        }[cls]
 
         mc_rows = np.flatnonzero(
             (labels_mc == class_index) & np.isin(energy_mc, common)

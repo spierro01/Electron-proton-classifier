@@ -14,7 +14,7 @@ import evaluate_ot_closure as closure
 
 HERE = Path(__file__).resolve().parent
 PREVIOUS = HERE / "results/task4_closure"
-CURRENT = HERE / "results/task6_mod4_closure"
+CURRENT = HERE / "results/task6_nominal_mod4_closure"
 
 
 def main():
@@ -35,7 +35,7 @@ def main():
 
     # Reuse the Task-4 procedure with the conditional latent files.
     # The original module and previous results remain unchanged.
-    closure.CALIBRATED = HERE / "results/task6_mod4_efficiency"
+    closure.CALIBRATED = HERE / "results/task6_nominal_mod4_efficiency"
     closure.OUT = CURRENT
 
     print(

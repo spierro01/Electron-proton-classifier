@@ -170,6 +170,12 @@ def optimizer_step(loss, optimizer, parameters):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--exclude-energy",
+        type=float,
+        required=True,
+        help="Beam energy excluded from MC and TB derivation.",
+    )
     parser.add_argument("--class-name", choices=["e", "p", "C"], required=True)
     parser.add_argument("--hidden", type=int, default=128)
     parser.add_argument("--layers", type=int, default=4)
@@ -223,6 +229,53 @@ def main():
 
     if classes != tb_classes or checkpoint != tb_checkpoint:
         raise ValueError("MC/TB class or PID-checkpoint mismatch.")
+
+    # Exclude the held-out energy BEFORE computing statistics.
+    excluded_energy = args.exclude_energy
+    if not np.isfinite(excluded_energy):
+        raise ValueError("Excluded energy must be finite.")
+
+    energy_atol = 1e-4
+    remove_mc = np.isclose(
+        source_e, excluded_energy, rtol=0, atol=energy_atol
+    )
+    remove_tb = np.isclose(
+        target_e, excluded_energy, rtol=0, atol=energy_atol
+    )
+
+    if not remove_mc.any() or not remove_tb.any():
+        raise ValueError(
+            "The excluded energy must be present in both "
+            "MC and TB derivation."
+        )
+
+    # Guard against a tolerance matching multiple distinct settings.
+    for energies, selected in [
+        (source_e, remove_mc), (target_e, remove_tb)
+    ]:
+        if len(np.unique(energies[selected])) != 1:
+            raise ValueError("Ambiguous excluded energy.")
+
+    loeo_removed_mc = int(remove_mc.sum())
+    loeo_removed_tb = int(remove_tb.sum())
+
+    source, source_e, mc_rows = (
+        source[~remove_mc],
+        source_e[~remove_mc],
+        mc_rows[~remove_mc],
+    )
+    target, target_e, tb_rows = (
+        target[~remove_tb],
+        target_e[~remove_tb],
+        tb_rows[~remove_tb],
+    )
+
+    print(
+        f"LOEO: excluded energy {excluded_energy:g}; "
+        f"removed MC={loeo_removed_mc:,}, "
+        f"TB derivation={loeo_removed_tb:,}",
+        flush=True,
+    )
 
     common = np.intersect1d(np.unique(source_e), np.unique(target_e))
     if len(common) == 0:
@@ -315,6 +368,10 @@ def main():
         "source_events": len(source),
         "target_derivation_events": len(target),
         "common_energies": common.tolist(),
+        "excluded_energy": float(excluded_energy),
+        "energy_matching_atol": energy_atol,
+        "loeo_removed_mc_events": loeo_removed_mc,
+        "loeo_removed_tb_derivation_events": loeo_removed_tb,
         "excluded_tb_energies": excluded_tb.tolist(),
         "architecture": architecture,
         "batch_size": args.batch_size,
